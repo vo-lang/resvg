@@ -69,14 +69,16 @@ pub fn register_externs(
 // ── Standalone C-ABI WASM exports (wasm-standalone feature) ──────────────────
 //
 // Used when the .wasm binary is pre-built and dynamically loaded by the browser.
-// JS calls: resvg_alloc / resvg_render / resvg_dealloc via WebAssembly.instantiate.
+// Follows the standard Vo ext module ABI:
+//   vo_alloc / vo_dealloc  — memory management
+//   github_com_vo_lang_resvg_Render — matches the Vo extern name exactly
 
 #[cfg(feature = "wasm-standalone")]
 mod standalone {
     use super::render_svg_to_png;
 
     #[no_mangle]
-    pub extern "C" fn resvg_alloc(size: u32) -> *mut u8 {
+    pub extern "C" fn vo_alloc(size: u32) -> *mut u8 {
         let mut buf = Vec::<u8>::with_capacity(size as usize);
         let ptr = buf.as_mut_ptr();
         std::mem::forget(buf);
@@ -84,23 +86,23 @@ mod standalone {
     }
 
     #[no_mangle]
-    pub extern "C" fn resvg_dealloc(ptr: *mut u8, size: u32) {
+    pub extern "C" fn vo_dealloc(ptr: *mut u8, size: u32) {
         unsafe { drop(Vec::from_raw_parts(ptr, 0, size as usize)) };
     }
 
-    /// Render SVG bytes at `svg_ptr[..svg_len]` → PNG.
+    /// Standard Vo ext ABI: input = UTF-8 SVG bytes, output = PNG bytes.
     ///
-    /// Writes the PNG byte count to `*out_len` and returns a pointer to the
-    /// PNG bytes (caller must free with `resvg_dealloc`).
-    /// Returns null on error (and writes 0 to `*out_len`).
+    /// Returns pointer to PNG bytes (freed by caller via `vo_dealloc`),
+    /// or null on error (writes 0 to `*out_len`).
     #[no_mangle]
-    pub extern "C" fn resvg_render(
-        svg_ptr: *const u8,
-        svg_len: u32,
+    #[allow(non_snake_case)]
+    pub extern "C" fn github_com_vo_lang_resvg_Render(
+        input_ptr: *const u8,
+        input_len: u32,
         out_len: *mut u32,
     ) -> *mut u8 {
         let svg = unsafe {
-            let bytes = std::slice::from_raw_parts(svg_ptr, svg_len as usize);
+            let bytes = std::slice::from_raw_parts(input_ptr, input_len as usize);
             match std::str::from_utf8(bytes) {
                 Ok(s) => s.to_string(),
                 Err(_) => { *out_len = 0; return std::ptr::null_mut(); }
