@@ -69,9 +69,13 @@ pub fn register_externs(
 // ── Standalone C-ABI WASM exports (wasm-standalone feature) ──────────────────
 //
 // Used when the .wasm binary is pre-built and dynamically loaded by the browser.
-// Follows the standard Vo ext module ABI:
+// Follows the Vo ext module v2 ABI:
 //   vo_alloc / vo_dealloc  — memory management
 //   github_com_vo_lang_resvg_Render — matches the Vo extern name exactly
+//
+// Input (v2 Bytes slot):  [u32 LE len][len bytes of UTF-8 SVG]
+// Output (v2 tagged):     TAG_BYTES(0xE3)+[u32 len]+[png bytes]+TAG_NIL_ERROR(0xE0)
+//                      or TAG_NIL_REF(0xE4)+TAG_ERROR_STR(0xE1)+[u16 len]+[msg bytes]
 
 #[cfg(feature = "wasm-standalone")]
 mod standalone {
@@ -87,13 +91,10 @@ mod standalone {
 
     #[no_mangle]
     pub extern "C" fn vo_dealloc(ptr: *mut u8, size: u32) {
-        unsafe { drop(Vec::from_raw_parts(ptr, 0, size as usize)) };
+        unsafe { drop(Vec::from_raw_parts(ptr, size as usize, size as usize)) };
     }
 
-    /// Standard Vo ext ABI: input = UTF-8 SVG bytes, output = PNG bytes.
-    ///
-    /// Returns pointer to PNG bytes (freed by caller via `vo_dealloc`),
-    /// or null on error (writes 0 to `*out_len`).
+    /// Vo ext v2 ABI: decode [u32-len][svg-bytes] input, return tagged binary output.
     #[no_mangle]
     #[allow(non_snake_case)]
     pub extern "C" fn github_com_vo_lang_resvg_Render(
@@ -101,26 +102,54 @@ mod standalone {
         input_len: u32,
         out_len: *mut u32,
     ) -> *mut u8 {
-        let svg = unsafe {
-            let bytes = std::slice::from_raw_parts(input_ptr, input_len as usize);
-            match std::str::from_utf8(bytes) {
-                Ok(s) => s.to_string(),
-                Err(_) => { *out_len = 0; return std::ptr::null_mut(); }
-            }
+        let output = unsafe {
+            let input = std::slice::from_raw_parts(input_ptr, input_len as usize);
+            render_v2(input)
         };
-        match render_svg_to_png(&svg) {
-            Ok(mut png) => {
-                png.shrink_to_fit();
-                let len = png.len() as u32;
-                let ptr = png.as_mut_ptr();
-                std::mem::forget(png);
-                unsafe { *out_len = len; }
-                ptr
-            }
-            Err(_) => {
-                unsafe { *out_len = 0; }
-                std::ptr::null_mut()
-            }
+        let len = output.len() as u32;
+        let mut boxed = output.into_boxed_slice();
+        let ptr = boxed.as_mut_ptr();
+        std::mem::forget(boxed);
+        unsafe { *out_len = len; }
+        ptr
+    }
+
+    fn render_v2(input: &[u8]) -> Vec<u8> {
+        if input.len() < 4 {
+            return error_out("resvg: input too short");
         }
+        let svg_len = u32::from_le_bytes([input[0], input[1], input[2], input[3]]) as usize;
+        if input.len() < 4 + svg_len {
+            return error_out("resvg: input truncated");
+        }
+        let svg_bytes = &input[4..4 + svg_len];
+        let svg = match std::str::from_utf8(svg_bytes) {
+            Ok(s) => s,
+            Err(e) => return error_out(&format!("resvg: invalid utf-8: {}", e)),
+        };
+        match render_svg_to_png(svg) {
+            Ok(png) => ok_out(&png),
+            Err(e) => error_out(&e),
+        }
+    }
+
+    fn ok_out(data: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(1 + 4 + data.len() + 1);
+        buf.push(0xE3u8);
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(data);
+        buf.push(0xE0u8);
+        buf
+    }
+
+    fn error_out(msg: &str) -> Vec<u8> {
+        let bytes = msg.as_bytes();
+        let len = bytes.len().min(0xFFFF);
+        let mut buf = Vec::with_capacity(1 + 1 + 2 + len);
+        buf.push(0xE4u8);
+        buf.push(0xE1u8);
+        buf.extend_from_slice(&(len as u16).to_le_bytes());
+        buf.extend_from_slice(&bytes[..len]);
+        buf
     }
 }
