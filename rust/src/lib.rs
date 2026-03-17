@@ -26,7 +26,7 @@ mod vo_ext_impl {
     use vo_ext::prelude::*;
     use vo_runtime::builtins::error_helper::{write_error_to, write_nil_error};
 
-    #[vo_fn("github.com/vo-lang/resvg", "Render")]
+    #[vo_fn("resvg", "Render")]
     pub fn render(call: &mut ExternCallContext) -> ExternResult {
         let svg = call.arg_str(0).to_string();
         match render_svg_to_png(&svg) {
