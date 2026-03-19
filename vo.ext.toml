@@ -1,3 +1,7 @@
 [extension]
 name = "resvg"
 path = "rust/target/{profile}/libvo_resvg"
+
+[extension.wasm]
+type = "standalone"
+wasm = "resvg.wasm"
